@@ -1,0 +1,71 @@
+name: build-gemma-native-windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extract patched source
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "codex-rust-v0.142.5-gemma4-native-github-ready*.zip" | Select-Object -First 1
+          if (-not $zip) {
+            throw "Source zip not found in repo root."
+          }
+
+          New-Item -ItemType Directory -Force -Path "_src" | Out-Null
+          Expand-Archive -Force $zip.FullName "_src"
+
+          if (-not (Test-Path "_src/codex-rust-v0.142.5/codex-rs/Cargo.toml")) {
+            throw "Extracted source layout is wrong."
+          }
+
+      - name: Remove static CRT flag
+        working-directory: _src/codex-rust-v0.142.5/codex-rs
+        shell: pwsh
+        run: |
+          $p = ".cargo/config.toml"
+          $c = Get-Content $p -Raw
+          $c = $c.Replace(', "-C", "target-feature=+crt-static"', '')
+          Set-Content $p $c -Encoding UTF8
+          Get-Content $p
+
+      - name: Build patched Codex
+        working-directory: _src/codex-rust-v0.142.5/codex-rs
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          RUSTFLAGS: "-C link-arg=/STACK:8388608"
+        run: cargo build -p codex-cli --bin codex -j 4
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "_artifact" | Out-Null
+
+          Copy-Item "_src/codex-rust-v0.142.5/codex-rs/target/debug/codex.exe" "_artifact/codex.exe"
+          Copy-Item "_src/codex-rust-v0.142.5/examples/hybrid.gemma-native.config.toml" "_artifact/hybrid.gemma-native.config.toml"
+          Copy-Item "_src/codex-rust-v0.142.5/GEMMA-NATIVE-README-TR.md" "_artifact/GEMMA-NATIVE-README-TR.md"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-gemma4-native-windows
+          path: _artifact/*
